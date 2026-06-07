@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>tachion</AssemblyName>
+    <RootNamespace>Tachion</RootNamespace>
+    <ApplicationIcon>Assets\tachion.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\tachion.ico" />
+    <EmbeddedResource Include="Assets\tray-green-16.ico" />
+    <EmbeddedResource Include="Assets\tray-red-16.ico" />
+  </ItemGroup>
+</Project>

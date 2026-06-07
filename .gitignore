@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+publish/
+dist/
+
+# User/local settings
+tachion.config.json
+*.user
+*.suo
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
