@@ -1,19 +1,34 @@
-# Build output
+# Windows / Visual Studio / .NET
+.vs/
 bin/
 obj/
-publish/
-dist/
-
-# User/local settings
-tachion.config.json
 *.user
 *.suo
+*.pdb
 
-# IDE
-.vs/
-.vscode/
-.idea/
-
-# OS
+# macOS / Xcode
 .DS_Store
-Thumbs.db
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+*.app
+*.dSYM
+*.xcarchive
+
+# SwiftPM
+.swiftpm/
+.build/
+Package.resolved
+
+# Secrets / local config
+*.local
+*.secret
+tachion.config.json
+settings.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,4 +1,4 @@
-tachion Windows client
+tachion Windows client v0.1.1
 
 1. Run tachion.exe.
 2. Choose your local sync folder.
