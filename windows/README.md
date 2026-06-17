@@ -1,4 +1,4 @@
-# tachion
+# tachion Windows client
 
 Small personal file-sync client for Windows.
 
@@ -80,3 +80,17 @@ Locked-file upload fix:
 ### 0.1.0
 
 Initial GitHub-ready Windows WinForms tray client.
+
+
+## Current version
+
+Windows client version: `0.1.3`
+
+This version includes delete propagation and improved handling of whole-folder copy/move operations.
+
+
+## Startup behavior
+
+`Run at Windows startup` only launches the tachion app at Windows login.
+
+`Start sync when opened` is a separate option. Enable it if you want sync to start automatically when tachion opens, including after Windows startup.

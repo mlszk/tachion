@@ -74,15 +74,26 @@ public sealed class SyncClient : IDisposable
         {
             IncludeSubdirectories = true,
             EnableRaisingEvents = true,
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+            InternalBufferSize = 64 * 1024
         };
-        _watcher.Created += (_, e) => QueueUpload(e.FullPath);
+        _watcher.Created += (_, e) =>
+        {
+            if (Directory.Exists(e.FullPath)) QueueFolderUpload(e.FullPath);
+            else QueueUpload(e.FullPath);
+        };
         _watcher.Changed += (_, e) => QueueUpload(e.FullPath);
         _watcher.Deleted += (_, e) => QueueDelete(e.FullPath);
         _watcher.Renamed += (_, e) =>
         {
             QueueDelete(e.OldFullPath);
-            QueueUpload(e.FullPath);
+            if (Directory.Exists(e.FullPath)) QueueFolderUpload(e.FullPath);
+            else QueueUpload(e.FullPath);
+        };
+        _watcher.Error += (_, e) =>
+        {
+            _log("File watcher missed events, doing full rescan: " + e.GetException().Message);
+            QueueFullRescan();
         };
     }
 
@@ -98,6 +109,139 @@ public sealed class SyncClient : IDisposable
         if (ext.Equals(".dwl2", StringComparison.OrdinalIgnoreCase)) return true;
         if (ext.Equals(".swp", StringComparison.OrdinalIgnoreCase)) return true;   // editor swap files
         return false;
+    }
+
+    private void QueueFolderUpload(string folderPath)
+    {
+        if (_cts == null || _cts.IsCancellationRequested) return;
+
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        _ = Task.Run(async () =>
+        {
+            var queuedSignatures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string? previousTreeSignature = null;
+            var stableRounds = 0;
+
+            try
+            {
+                // A copied folder tree is not atomic on Windows. The first directory
+                // event can arrive while nested folders/files are still being created,
+                // and FileSystemWatcher may miss some children during that race.
+                // Keep rescanning until the tree stops changing for a few rounds.
+                for (var round = 1; round <= 120; round++) // about 60 seconds max
+                {
+                    linked.Token.ThrowIfCancellationRequested();
+                    if (!Directory.Exists(folderPath)) return;
+
+                    var files = Directory.EnumerateFiles(folderPath, "*", SearchOption.AllDirectories)
+                        .Where(file => !ShouldIgnoreFile(file))
+                        .OrderBy(file => file, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var snapshot = BuildFolderSnapshot(files);
+                    foreach (var item in snapshot)
+                    {
+                        linked.Token.ThrowIfCancellationRequested();
+                        if (!queuedSignatures.TryGetValue(item.Key, out var previousFileSignature) || previousFileSignature != item.Value)
+                        {
+                            queuedSignatures[item.Key] = item.Value;
+                            QueueUpload(item.Key);
+                        }
+                    }
+
+                    var treeSignature = BuildFolderSignature(snapshot);
+                    if (treeSignature == previousTreeSignature)
+                    {
+                        stableRounds++;
+                        if (stableRounds >= 4)
+                        {
+                            _log($"Folder scan complete {Path.GetFileName(folderPath)}: {queuedSignatures.Count} file(s) queued.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        stableRounds = 0;
+                        previousTreeSignature = treeSignature;
+                    }
+
+                    await Task.Delay(500, linked.Token);
+                }
+
+                _log($"Folder scan reached time limit {Path.GetFileName(folderPath)}: {queuedSignatures.Count} file(s) queued.");
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _log("Folder scan skipped " + folderPath + ": " + ex.Message);
+            }
+            finally
+            {
+                try { linked.Dispose(); } catch { }
+            }
+        });
+    }
+
+    private static Dictionary<string, string> BuildFolderSnapshot(IEnumerable<string> files)
+    {
+        var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            try
+            {
+                var info = new FileInfo(file);
+                if (!info.Exists) continue;
+                snapshot[file] = info.Length + "|" + info.LastWriteTimeUtc.Ticks;
+            }
+            catch
+            {
+                // File may be mid-copy/deleted/renamed between enumeration and stat.
+                // That means the tree is not stable yet, so include a changing marker.
+                snapshot[file] = "changing|" + DateTime.UtcNow.Ticks;
+            }
+        }
+        return snapshot;
+    }
+
+    private static string BuildFolderSignature(Dictionary<string, string> snapshot)
+    {
+        return string.Join("\n", snapshot
+            .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(item => item.Key + "|" + item.Value));
+    }
+
+    private void QueueFullRescan()
+    {
+        if (_cts == null || _cts.IsCancellationRequested) return;
+
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(1500, linked.Token);
+                if (!Directory.Exists(_settings.SyncDir)) return;
+
+                foreach (var file in Directory.EnumerateFiles(_settings.SyncDir, "*", SearchOption.AllDirectories))
+                {
+                    linked.Token.ThrowIfCancellationRequested();
+                    QueueUpload(file);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _log("Full rescan skipped: " + ex.Message);
+            }
+            finally
+            {
+                try { linked.Dispose(); } catch { }
+            }
+        });
     }
 
     private void QueueUpload(string fullPath)

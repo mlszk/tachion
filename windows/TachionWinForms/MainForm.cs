@@ -17,18 +17,20 @@ public sealed class MainForm : Form
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
     private readonly CheckBox _startupBox = new();
+    private readonly CheckBox _autoSyncBox = new();
 
     private TachionSettings _settings;
     private SyncClient? _client;
     private bool _allowClose;
     private bool _loadingStartup;
+    private bool _autoStartAttempted;
 
     public MainForm()
     {
-        Text = "tachion";
+        Text = "tachion " + AppVersion();
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(620, 460);
-        Size = new Size(760, 560);
+        MinimumSize = new Size(780, 460);
+        Size = new Size(940, 560);
         Icon = LoadEmbeddedIcon("tachion.ico") ?? Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
         _settings = TachionSettings.Load();
@@ -37,7 +39,7 @@ public sealed class MainForm : Form
 
         _tray = new NotifyIcon
         {
-            Text = "tachion",
+            Text = "tachion " + AppVersion(),
             Icon = LoadStatusIcon(false),
             Visible = true,
             ContextMenuStrip = BuildTrayMenu()
@@ -45,6 +47,19 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowFromTray();
 
         Log("Ready. Config: " + TachionSettings.ConfigPath);
+    }
+
+    private static string AppVersion()
+    {
+        var version = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        if (string.IsNullOrWhiteSpace(version))
+            version = Application.ProductVersion;
+
+        version = version.Split('+')[0];
+        return "v" + version;
     }
 
     private void BuildUi()
@@ -65,7 +80,7 @@ public sealed class MainForm : Form
 
         var title = new Label
         {
-            Text = "tachion",
+            Text = "tachion " + AppVersion(),
             AutoSize = true,
             Font = new Font(Font.FontFamily, 16, FontStyle.Bold),
             Margin = new Padding(0, 0, 0, 10)
@@ -122,6 +137,14 @@ public sealed class MainForm : Form
         _startupBox.CheckedChanged += StartupBox_Changed;
         _startupBox.Margin = new Padding(8, 0, 0, 0);
         buttons.Controls.Add(_startupBox);
+
+        _autoSyncBox.Text = "Start sync when opened";
+        _autoSyncBox.AutoSize = false;
+        _autoSyncBox.Height = 28;
+        _autoSyncBox.Width = 230;
+        _autoSyncBox.TextAlign = ContentAlignment.MiddleLeft;
+        _autoSyncBox.Margin = new Padding(8, 0, 0, 0);
+        buttons.Controls.Add(_autoSyncBox);
 
         var statusPanel = new FlowLayoutPanel
         {
@@ -198,6 +221,7 @@ public sealed class MainForm : Form
         _urlBox.Text = _settings.SyncUrl;
         _nameBox.Text = _settings.SyncName;
         _tokenBox.Text = _settings.SyncToken;
+        _autoSyncBox.Checked = _settings.StartSyncOnLaunch;
         _loadingStartup = true;
         _startupBox.Checked = StartupService.IsEnabled();
         _loadingStartup = false;
@@ -209,6 +233,7 @@ public sealed class MainForm : Form
         _settings.SyncUrl = _urlBox.Text.Trim();
         _settings.SyncName = _nameBox.Text.Trim();
         _settings.SyncToken = _tokenBox.Text;
+        _settings.StartSyncOnLaunch = _autoSyncBox.Checked;
         _settings.Save();
     }
 
@@ -341,6 +366,18 @@ public sealed class MainForm : Form
         _tray.Visible = false;
         _tray.Dispose();
         Application.Exit();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+
+        if (_autoStartAttempted || !_settings.StartSyncOnLaunch)
+            return;
+
+        _autoStartAttempted = true;
+        Log("Auto-start sync enabled.");
+        Start_Click(this, EventArgs.Empty);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

@@ -9,6 +9,7 @@ public sealed class TachionSettings
     public string SyncDir { get; set; } = @"D:\tachion";
     public string SyncUrl { get; set; } = "wss://tachion.example.com/ws";
     public string SyncName { get; set; } = Environment.MachineName;
+    public bool StartSyncOnLaunch { get; set; } = false;
 
     [JsonIgnore]
     public string SyncToken { get; set; } = "";
