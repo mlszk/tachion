@@ -2,7 +2,7 @@
 
 Small personal file-sync client for Windows.
 
-Version: **0.1.1**
+Version: **0.1.4**
 
 This is a lightweight C# WinForms tray app. It syncs a chosen local folder with a compatible WebSocket sync server.
 
@@ -14,6 +14,9 @@ This is a lightweight C# WinForms tray app. It syncs a chosen local folder with 
 - WebSocket sync
 - Green/red tray state icon
 - Optional run at Windows startup
+- Optional start sync when tachion opens
+- Configurable global hotkey for start/stop sync, default `Ctrl+Alt+T`
+- Optional always-on-top main window
 - Token stored with Windows DPAPI, not as plain text
 - Settings stored in `%APPDATA%\tachion\tachion.config.json`
 
@@ -84,9 +87,9 @@ Initial GitHub-ready Windows WinForms tray client.
 
 ## Current version
 
-Windows client version: `0.1.3`
+Windows client version: `0.1.4`
 
-This version includes delete propagation and improved handling of whole-folder copy/move operations.
+This version includes delete propagation, improved handling of whole-folder copy/move operations, a 30-minute offline connection watchdog, and a configurable global start/stop hotkey.
 
 
 ## Startup behavior
@@ -94,3 +97,26 @@ This version includes delete propagation and improved handling of whole-folder c
 `Run at Windows startup` only launches the tachion app at Windows login.
 
 `Start sync when opened` is a separate option. Enable it if you want sync to start automatically when tachion opens, including after Windows startup.
+
+
+## Global hotkey
+
+`Global toggle hotkey` starts sync when it is stopped and stops sync when it is running.
+
+Default:
+
+```text
+Ctrl+Alt+T
+```
+
+Click the hotkey field and press a new key combination to change it. The hotkey must include Ctrl, Alt, or Shift plus a normal key.
+
+
+## Always on top
+
+Enable `Always on top` to keep the tachion main window above other windows while it is open. Closing the window still hides it to the tray as before.
+
+
+## Delete propagation note
+
+Delete propagation requires the updated VPS `syncd_server.py`. The server now understands `delete` messages and keeps tombstones so offline clients do not resurrect deleted folders/files during reconciliation.

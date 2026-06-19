@@ -3,20 +3,13 @@
 syncd_server.py - minimal instant-sync hub for the VPS.
 
 Holds the canonical copy of one folder and pushes every change to all
-connected clients over persistent WebSockets. This is the "warm central
-push" trick that makes Dropbox feel instant, stripped to its bones.
+connected clients over persistent WebSockets.
 
 Scope / assumptions:
   * Small files (DXF, configs, etc.). Transfers are whole-file, base64 over JSON.
-  * Runs behind nginx TLS; bind to localhost or WireGuard IP, not public IP.
-  * A shared token is the only auth. Fine for a private tool; not a bank vault.
   * Last-write-wins by file mtime.
-  * Delete support exists through REST and WebSocket message type "delete".
-    Tombstones prevent old desktop clients from resurrecting deleted files.
-
-Run (normally via systemd; manual start for testing):
-  pip install "fastapi" "uvicorn[standard]"
-  SYNC_ROOT=/opt/tachion SYNC_HOST=127.0.0.1 SYNC_TOKEN=yoursecret python3 syncd_server.py
+  * Delete propagation is supported. Folder deletes create a tombstone so
+    offline clients do not resurrect deleted files during reconciliation.
 """
 
 import asyncio
@@ -24,64 +17,63 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import (FastAPI, WebSocket, WebSocketDisconnect,
-                     Request, Header, HTTPException, Depends)
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 ROOT = Path(os.environ.get("SYNC_ROOT", "/opt/fsync")).resolve()
 TOKEN = os.environ.get("SYNC_TOKEN", "change-me")
 HOST = os.environ.get("SYNC_HOST", "127.0.0.1")   # behind nginx TLS; never bind public
 PORT = int(os.environ.get("SYNC_PORT", "8765"))
-
-META_DIR = ROOT / ".tachion_meta"
-TOMBSTONES_FILE = META_DIR / "deleted.json"
-TOMBSTONE_KEEP_NS = int(os.environ.get("TOMBSTONE_KEEP_DAYS", "30")) * 24 * 60 * 60 * 1_000_000_000
+TOMBSTONES_PATH = ROOT / ".tachion-tombstones.json"
+TOMBSTONE_RETENTION_NS = 30 * 24 * 60 * 60 * 1_000_000_000  # 30 days
 
 ROOT.mkdir(parents=True, exist_ok=True)
-META_DIR.mkdir(parents=True, exist_ok=True)
 app = FastAPI()
 
 clients: dict[WebSocket, str] = {}
 clients_lock = asyncio.Lock()
-tombstones_lock = asyncio.Lock()
+tombstones: dict[str, int] = {}
+
+
+def now_ns() -> int:
+    return time.time_ns()
 
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def clean_rel(rel: str) -> str:
+    return rel.replace("\\", "/").strip("/")
+
+
+def is_same_or_child(rel: str, parent: str) -> bool:
+    rel = clean_rel(rel)
+    parent = clean_rel(parent)
+    return rel == parent or rel.startswith(parent + "/")
+
+
+def is_ignored_rel(rel: str) -> bool:
+    rel = clean_rel(rel)
+    if not rel:
+        return True
+    name = rel.rsplit("/", 1)[-1]
+    return name == TOMBSTONES_PATH.name or ".tmp." in name
+
+
 def safe_path(rel: str) -> Path:
     """Resolve a client-supplied relative path, refusing to escape ROOT."""
-    rel = rel.replace("\\", "/").lstrip("/")
+    rel = clean_rel(rel)
     p = (ROOT / rel).resolve()
-    if p != ROOT and ROOT not in p.parents:
+    if p == ROOT:
+        raise ValueError("refusing to operate on sync root itself")
+    if ROOT not in p.parents:
         raise ValueError(f"path escapes root: {rel!r}")
     return p
-
-
-def rel_path(path: Path) -> str:
-    return path.relative_to(ROOT).as_posix()
-
-
-def is_internal_path(path: Path) -> bool:
-    """Ignore tachion's own metadata files."""
-    try:
-        path.relative_to(META_DIR)
-        return True
-    except ValueError:
-        return False
-
-
-def should_list_file(path: Path) -> bool:
-    if is_internal_path(path):
-        return False
-    if ".tmp." in path.name:
-        return False
-    return path.is_file()
 
 
 def atomic_write(path: Path, data: bytes, mtime_ns: int) -> None:
@@ -96,60 +88,83 @@ def atomic_write(path: Path, data: bytes, mtime_ns: int) -> None:
     os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
-def load_tombstones_sync() -> dict[str, int]:
+def load_tombstones() -> None:
+    global tombstones
     try:
-        with open(TOMBSTONES_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return {str(k): int(v) for k, v in raw.items()}
-    except FileNotFoundError:
-        return {}
+        if TOMBSTONES_PATH.is_file():
+            raw = json.loads(TOMBSTONES_PATH.read_text(encoding="utf-8"))
+            tombstones = {clean_rel(k): int(v) for k, v in raw.items() if clean_rel(k)}
     except Exception as e:
-        print(f"[server] tombstone load error: {e}")
-        return {}
+        print(f"[server] could not load tombstones: {e}")
+        tombstones = {}
+    prune_tombstones(save=False)
 
 
-def save_tombstones_sync(tombstones: dict[str, int]) -> None:
-    META_DIR.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(tombstones, indent=2, sort_keys=True).encode("utf-8")
-    atomic_write(TOMBSTONES_FILE, data, time.time_ns())
+def save_tombstones() -> None:
+    try:
+        tmp = TOMBSTONES_PATH.with_name(TOMBSTONES_PATH.name + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(tombstones, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, TOMBSTONES_PATH)
+    except Exception as e:
+        print(f"[server] could not save tombstones: {e}")
 
 
-def prune_tombstones_sync(tombstones: dict[str, int]) -> dict[str, int]:
-    now = time.time_ns()
-    return {rel: ts for rel, ts in tombstones.items() if now - int(ts) <= TOMBSTONE_KEEP_NS}
+def prune_tombstones(save: bool = True) -> None:
+    cutoff = now_ns() - TOMBSTONE_RETENTION_NS
+    old = [rel for rel, ts in tombstones.items() if ts < cutoff]
+    for rel in old:
+        tombstones.pop(rel, None)
+    if old and save:
+        save_tombstones()
 
 
-async def get_tombstones() -> dict[str, int]:
-    async with tombstones_lock:
-        tombstones = prune_tombstones_sync(load_tombstones_sync())
-        save_tombstones_sync(tombstones)
-        return tombstones
+def newest_tombstone_for(rel: str, mtime_ns: int) -> tuple[str, int] | None:
+    rel = clean_rel(rel)
+    best: tuple[str, int] | None = None
+    for t_rel, t_ns in tombstones.items():
+        if t_ns >= mtime_ns and is_same_or_child(rel, t_rel):
+            if best is None or t_ns > best[1]:
+                best = (t_rel, t_ns)
+    return best
 
 
-async def remember_delete(rel: str, delete_ns: int) -> None:
-    async with tombstones_lock:
-        tombstones = load_tombstones_sync()
-        old = int(tombstones.get(rel, 0))
-        if delete_ns > old:
-            tombstones[rel] = delete_ns
-        tombstones = prune_tombstones_sync(tombstones)
-        save_tombstones_sync(tombstones)
+def clear_tombstones_for_put(rel: str) -> None:
+    """A newer put intentionally recreates this file/tree, so remove covering tombstones."""
+    rel = clean_rel(rel)
+    removed = False
+    for t_rel in list(tombstones):
+        if is_same_or_child(rel, t_rel) or is_same_or_child(t_rel, rel):
+            tombstones.pop(t_rel, None)
+            removed = True
+    if removed:
+        save_tombstones()
 
 
-async def forget_tombstone_if_newer_put(rel: str, mtime_ns: int) -> None:
-    async with tombstones_lock:
-        tombstones = load_tombstones_sync()
-        deleted_ns = int(tombstones.get(rel, 0))
-        if deleted_ns and mtime_ns > deleted_ns:
-            tombstones.pop(rel, None)
-            save_tombstones_sync(prune_tombstones_sync(tombstones))
+def add_tombstone(rel: str, delete_ns: int) -> None:
+    rel = clean_rel(rel)
+    if not rel:
+        return
+    tombstones[rel] = max(tombstones.get(rel, 0), delete_ns)
+    # A folder tombstone covers children; remove redundant child tombstones.
+    for t_rel in list(tombstones):
+        if t_rel != rel and is_same_or_child(t_rel, rel):
+            tombstones.pop(t_rel, None)
+    prune_tombstones(save=False)
+    save_tombstones()
 
 
-def build_manifest() -> dict:
-    m = {}
+def build_manifest() -> dict[str, int]:
+    m: dict[str, int] = {}
     for p in ROOT.rglob("*"):
-        if should_list_file(p):
-            m[rel_path(p)] = p.stat().st_mtime_ns
+        if not p.is_file():
+            continue
+        rel = p.relative_to(ROOT).as_posix()
+        if is_ignored_rel(rel):
+            continue
+        mt = p.stat().st_mtime_ns
+        if newest_tombstone_for(rel, mt) is not None:
+            continue
+        m[rel] = mt
     return m
 
 
@@ -161,7 +176,7 @@ def read_file(rel: str):
 def msg_put(rel: str, data: bytes, mtime_ns: int) -> str:
     return json.dumps({
         "type": "put",
-        "path": rel,
+        "path": clean_rel(rel),
         "mtime_ns": mtime_ns,
         "hash": sha256(data),
         "data": base64.b64encode(data).decode("ascii"),
@@ -171,9 +186,9 @@ def msg_put(rel: str, data: bytes, mtime_ns: int) -> str:
 def msg_delete(rel: str, delete_ns: int) -> str:
     return json.dumps({
         "type": "delete",
-        "path": rel,
+        "path": clean_rel(rel),
         "delete_ns": delete_ns,
-        "mtime_ns": delete_ns,  # compatibility/name symmetry for clients
+        "mtime_ns": delete_ns,
     })
 
 
@@ -188,67 +203,70 @@ async def broadcast(message: str, exclude: WebSocket | None = None) -> None:
     async with clients_lock:
         targets = [ws for ws in clients if ws is not exclude]
     if targets:
-        await asyncio.gather(*(safe_send(ws, message) for ws in targets),
-                             return_exceptions=True)
+        await asyncio.gather(*(safe_send(ws, message) for ws in targets), return_exceptions=True)
 
 
-def cleanup_empty_parents(path: Path) -> None:
-    parent = path.parent
-    while parent != ROOT:
-        if is_internal_path(parent):
-            break
+def cleanup_empty_parents(parent: Path) -> None:
+    root = str(ROOT).rstrip("/\\")
+    while parent != ROOT and str(parent).rstrip("/\\") != root:
         try:
+            if any(parent.iterdir()):
+                break
             parent.rmdir()
             parent = parent.parent
-        except OSError:
+        except Exception:
             break
-
-
-async def delete_one(rel: str, delete_ns: int | None = None) -> tuple[str, int]:
-    """Delete one file if it exists, remember tombstone, return rel/delete time."""
-    path = safe_path(rel)
-    rel = rel_path(path)
-    delete_ns = delete_ns or time.time_ns()
-
-    if path.is_dir():
-        raise IsADirectoryError(rel)
-
-    if path.is_file():
-        path.unlink()
-        cleanup_empty_parents(path)
-
-    await remember_delete(rel, delete_ns)
-    return rel, delete_ns
 
 
 async def apply_put(m: dict, sender: WebSocket) -> None:
-    rel = m["path"]
+    rel = clean_rel(m["path"])
+    if is_ignored_rel(rel):
+        return
     mtime_ns = int(m["mtime_ns"])
     data = base64.b64decode(m["data"])
     if sha256(data) != m.get("hash"):
         return  # integrity check failed - drop it
-
-    tombstones = await get_tombstones()
-    deleted_ns = int(tombstones.get(rel, 0))
-    if deleted_ns and mtime_ns <= deleted_ns:
-        print(f"[server] ignored old put for deleted {rel} from {clients.get(sender, '?')}")
-        return
-
+    if newest_tombstone_for(rel, mtime_ns) is not None:
+        return  # an equal/newer delete wins; do not resurrect
     path = safe_path(rel)
     if path.is_file() and path.stat().st_mtime_ns >= mtime_ns:
         return  # we already have this or something newer
-
     atomic_write(path, data, mtime_ns)
-    await forget_tombstone_if_newer_put(rel, mtime_ns)
+    clear_tombstones_for_put(rel)
     print(f"[server] stored {rel} from {clients.get(sender, '?')}")
     await broadcast(msg_put(rel, data, mtime_ns), exclude=sender)
 
 
 async def apply_delete(m: dict, sender: WebSocket) -> None:
-    rel = m["path"]
-    delete_ns = int(m.get("delete_ns") or m.get("mtime_ns") or time.time_ns())
-    rel, delete_ns = await delete_one(rel, delete_ns)
-    print(f"[server] deleted {rel} from {clients.get(sender, '?')}")
+    rel = clean_rel(m.get("path", ""))
+    if is_ignored_rel(rel):
+        return
+    delete_ns = int(m.get("delete_ns") or m.get("mtime_ns") or now_ns())
+
+    try:
+        path = safe_path(rel)
+    except Exception as e:
+        print(f"[server] rejected delete {rel!r} from {clients.get(sender, '?')}: {e}")
+        return
+
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+            print(f"[server] deleted folder {rel} from {clients.get(sender, '?')}")
+        elif path.is_file():
+            path.unlink()
+            print(f"[server] deleted {rel} from {clients.get(sender, '?')}")
+        else:
+            print(f"[server] tombstoned already-missing {rel} from {clients.get(sender, '?')}")
+        cleanup_empty_parents(path.parent)
+    except Exception as e:
+        # Never let one failed delete kill the WebSocket. Log it and keep the
+        # connection alive. Do not tombstone/broadcast if the server copy could
+        # not be removed, otherwise it may resurrect later from the VPS copy.
+        print(f"[server] delete failed {rel} from {clients.get(sender, '?')}: {e}")
+        return
+
+    add_tombstone(rel, delete_ns)
     await broadcast(msg_delete(rel, delete_ns), exclude=sender)
 
 
@@ -268,26 +286,30 @@ async def ws_endpoint(ws: WebSocket):
         print(f"[server] {name} connected ({len(clients)} total)")
 
         # ---- reconciliation (offline catch-up) ----
-        server_manifest = build_manifest()
-        tombstones = await get_tombstones()
+        sent_deletes: set[str] = set()
+        for rel, c_mtime in client_manifest.items():
+            if is_ignored_rel(rel):
+                continue
+            tombstone = newest_tombstone_for(rel, int(c_mtime))
+            if tombstone is not None:
+                t_rel, t_ns = tombstone
+                if t_rel not in sent_deletes:
+                    await ws.send_text(msg_delete(t_rel, t_ns))
+                    sent_deletes.add(t_rel)
 
+        server_manifest = build_manifest()
         for rel, s_mtime in server_manifest.items():          # server newer/unique -> push
             c_mtime = client_manifest.get(rel)
             if c_mtime is None or s_mtime > int(c_mtime):
                 data, mt = read_file(rel)
                 await ws.send_text(msg_put(rel, data, mt))
 
-        # Server-side deletions -> tell clients to delete local copies.
-        for rel, deleted_ns in tombstones.items():
-            c_mtime = client_manifest.get(rel)
-            if c_mtime is not None and int(c_mtime) <= int(deleted_ns):
-                await ws.send_text(msg_delete(rel, int(deleted_ns)))
-
-        # Client newer/unique -> ask, except when server has a newer tombstone.
         wanted = []
-        for rel, c_mtime in client_manifest.items():
+        for rel, c_mtime in client_manifest.items():          # client newer/unique -> ask
+            if is_ignored_rel(rel):
+                continue
             c_mtime = int(c_mtime)
-            if rel in tombstones and c_mtime <= int(tombstones[rel]):
+            if newest_tombstone_for(rel, c_mtime) is not None:
                 continue
             if rel not in server_manifest or c_mtime > server_manifest[rel]:
                 wanted.append(rel)
@@ -300,7 +322,10 @@ async def ws_endpoint(ws: WebSocket):
             if m.get("type") == "put":
                 await apply_put(m, sender=ws)
             elif m.get("type") == "delete":
-                await apply_delete(m, sender=ws)
+                try:
+                    await apply_delete(m, sender=ws)
+                except Exception as e:
+                    print(f"[server] delete handler error from {name}: {e}")
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -311,75 +336,7 @@ async def ws_endpoint(ws: WebSocket):
         print(f"[server] {name} disconnected ({len(clients)} left)")
 
 
-# --- REST API for lightweight clients (iOS, web) ---------------------------
-# Same token, same nginx TLS. Uploads/deletes here also broadcast to connected
-# desktop clients, so a phone action lands on desktops immediately.
-def require_token(authorization: str = Header(default="")):
-    if authorization != f"Bearer {TOKEN}":
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-@app.get("/files", dependencies=[Depends(require_token)])
-def list_files():
-    out = []
-    for p in ROOT.rglob("*"):
-        if should_list_file(p):
-            st = p.stat()
-            out.append({"path": rel_path(p),
-                        "size": st.st_size, "mtime_ns": st.st_mtime_ns})
-    return {"files": out}
-
-
-@app.get("/files/{path:path}", dependencies=[Depends(require_token)])
-def download_file(path: str):
-    try:
-        fp = safe_path(path)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="not found")
-    if not fp.is_file() or is_internal_path(fp):
-        raise HTTPException(status_code=404, detail="not found")
-    return FileResponse(str(fp), filename=fp.name,
-                        media_type="application/octet-stream")
-
-
-@app.put("/files/{path:path}", dependencies=[Depends(require_token)])
-async def upload_file(path: str, request: Request):
-    try:
-        fp = safe_path(path)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="bad path")
-    if is_internal_path(fp):
-        raise HTTPException(status_code=400, detail="bad path")
-
-    data = await request.body()
-    mtime_ns = time.time_ns()
-    atomic_write(fp, data, mtime_ns)
-    rel = rel_path(fp)
-    await forget_tombstone_if_newer_put(rel, mtime_ns)
-    print(f"[server] stored {rel} via REST upload")
-    await broadcast(msg_put(rel, data, mtime_ns))   # push to connected desktops
-    return {"path": rel, "size": len(data),
-            "hash": sha256(data), "mtime_ns": mtime_ns}
-
-
-@app.delete("/files/{path:path}", dependencies=[Depends(require_token)])
-async def delete_file(path: str):
-    try:
-        fp = safe_path(path)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="not found")
-    if is_internal_path(fp):
-        raise HTTPException(status_code=404, detail="not found")
-    if not fp.is_file():
-        raise HTTPException(status_code=404, detail="not found")
-
-    rel, delete_ns = await delete_one(path)
-    print(f"[server] deleted {rel} via REST")
-    await broadcast(msg_delete(rel, delete_ns))
-    return {"deleted": rel, "delete_ns": delete_ns}
-
-
 if __name__ == "__main__":
+    load_tombstones()
     print(f"[server] serving {ROOT} on ws://{HOST}:{PORT}/ws")
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning",
-                ws_max_size=64 * 1024 * 1024)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning", ws_max_size=64 * 1024 * 1024)
