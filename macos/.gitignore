@@ -1,0 +1,12 @@
+# macOS / Xcode local clutter
+.DS_Store
+._*
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# Do not commit local runtime secrets/settings
+*.secret
+*.token
+.env

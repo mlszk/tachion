@@ -1,0 +1,257 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		09DDF0E12FD73E6200704424 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 09DDF0E02FD73E6200704424 /* Assets.xcassets */; };
+		57DC230451FE549409B826CB /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A01FAFC65FC9B124BAE8B7 /* SettingsStore.swift */; };
+		826EE4331DB211D0BF4C0AFC /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0025FBFB66B6DCB1ED522EDD /* KeychainStore.swift */; };
+		C2377D33B1D96875009DC10F /* PathUtil.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BFD5E3383D4E8BFF02E979D /* PathUtil.swift */; };
+		D8FA16FD7AA189DFBCA59137 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF26005AF34C4044232BB5FA /* AppState.swift */; };
+		E5961F0616ED38A07B8CDBE6 /* TachionMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0330EAB19238A062251B3DB /* TachionMacApp.swift */; };
+		EABE9DDB68FA8E74C0C9901D /* SyncClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE95A36B079A5FEA1931808 /* SyncClient.swift */; };
+		F129F9A7EC6478686897B3A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9887B139A410C309104AB79B /* SettingsView.swift */; };
+		F2E703114B057B616781BBCB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EC14033E3AF3EBA489C185 /* AppDelegate.swift */; };
+		F2EF3A3D6773A53AE962018D /* StatusIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = A138754BE91030D8348B0447 /* StatusIcon.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0025FBFB66B6DCB1ED522EDD /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		09DDF0E02FD73E6200704424 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3BFD5E3383D4E8BFF02E979D /* PathUtil.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathUtil.swift; sourceTree = "<group>"; };
+		8D044C9D7849C4E463AB15C4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		9887B139A410C309104AB79B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A138754BE91030D8348B0447 /* StatusIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusIcon.swift; sourceTree = "<group>"; };
+		A97C29AD63741CF438998CE6 /* tachion.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = tachion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B0330EAB19238A062251B3DB /* TachionMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TachionMacApp.swift; sourceTree = "<group>"; };
+		B4EC14033E3AF3EBA489C185 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D5A01FAFC65FC9B124BAE8B7 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		DBE95A36B079A5FEA1931808 /* SyncClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncClient.swift; sourceTree = "<group>"; };
+		EF26005AF34C4044232BB5FA /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		29B2D46AA747A59804D46E1F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5928955287B8089ED2177128 = {
+			isa = PBXGroup;
+			children = (
+				D685C104AFFBCF83C7CB0FB6 /* TachionMac */,
+				BF7A2D27A78D590BDEF15AF2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		BF7A2D27A78D590BDEF15AF2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A97C29AD63741CF438998CE6 /* tachion.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D685C104AFFBCF83C7CB0FB6 /* TachionMac */ = {
+			isa = PBXGroup;
+			children = (
+				09DDF0E02FD73E6200704424 /* Assets.xcassets */,
+				B0330EAB19238A062251B3DB /* TachionMacApp.swift */,
+				B4EC14033E3AF3EBA489C185 /* AppDelegate.swift */,
+				EF26005AF34C4044232BB5FA /* AppState.swift */,
+				9887B139A410C309104AB79B /* SettingsView.swift */,
+				D5A01FAFC65FC9B124BAE8B7 /* SettingsStore.swift */,
+				0025FBFB66B6DCB1ED522EDD /* KeychainStore.swift */,
+				A138754BE91030D8348B0447 /* StatusIcon.swift */,
+				3BFD5E3383D4E8BFF02E979D /* PathUtil.swift */,
+				DBE95A36B079A5FEA1931808 /* SyncClient.swift */,
+				8D044C9D7849C4E463AB15C4 /* Info.plist */,
+			);
+			path = TachionMac;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		42AEFBAE01D2DFD981F7DA7D /* TachionMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AFD04581184175117C78D9AC /* Build configuration list for PBXNativeTarget "TachionMac" */;
+			buildPhases = (
+				E7209FB05162B7572F88D05E /* Sources */,
+				29B2D46AA747A59804D46E1F /* Frameworks */,
+				66F8606E9F0A136E2228EBCB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TachionMac;
+			productName = tachion;
+			productReference = A97C29AD63741CF438998CE6 /* tachion.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					42AEFBAE01D2DFD981F7DA7D = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 022E0F2E8ECAC35F5510DD6F /* Build configuration list for PBXProject "TachionMac" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5928955287B8089ED2177128;
+			productRefGroup = BF7A2D27A78D590BDEF15AF2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				42AEFBAE01D2DFD981F7DA7D /* TachionMac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		66F8606E9F0A136E2228EBCB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				09DDF0E12FD73E6200704424 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E7209FB05162B7572F88D05E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E5961F0616ED38A07B8CDBE6 /* TachionMacApp.swift in Sources */,
+				F2E703114B057B616781BBCB /* AppDelegate.swift in Sources */,
+				D8FA16FD7AA189DFBCA59137 /* AppState.swift in Sources */,
+				F129F9A7EC6478686897B3A6 /* SettingsView.swift in Sources */,
+				57DC230451FE549409B826CB /* SettingsStore.swift in Sources */,
+				826EE4331DB211D0BF4C0AFC /* KeychainStore.swift in Sources */,
+				F2EF3A3D6773A53AE962018D /* StatusIcon.swift in Sources */,
+				C2377D33B1D96875009DC10F /* PathUtil.swift in Sources */,
+				EABE9DDB68FA8E74C0C9901D /* SyncClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		4DC7B479A29173674AFD7BAC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TachionMac/Info.plist;
+				MARKETING_VERSION = 0.1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.tachion;
+				PRODUCT_NAME = tachion;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		683105B965893FCC643C4ECF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = TachionMac/Info.plist;
+				MARKETING_VERSION = 0.1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.tachion;
+				PRODUCT_NAME = tachion;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B74382A4D110BEFC1DEB55E4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SDKROOT = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		F901A40D62D95EAB754CE15B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		022E0F2E8ECAC35F5510DD6F /* Build configuration list for PBXProject "TachionMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B74382A4D110BEFC1DEB55E4 /* Debug */,
+				F901A40D62D95EAB754CE15B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AFD04581184175117C78D9AC /* Build configuration list for PBXNativeTarget "TachionMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				683105B965893FCC643C4ECF /* Debug */,
+				4DC7B479A29173674AFD7BAC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}
