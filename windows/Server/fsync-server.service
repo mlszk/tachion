@@ -1,0 +1,26 @@
+# /etc/systemd/system/fsync-server.service
+#
+# Install:
+#   sudo cp fsync-server.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/fsync-server.service   # set SYNC_TOKEN
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fsync-server
+#   sudo journalctl -u fsync-server -f                    # watch the log
+
+[Unit]
+Description=fsync instant-sync hub
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fsync-app
+Environment=SYNC_ROOT=/opt/fsync
+Environment=SYNC_HOST=127.0.0.1
+Environment=SYNC_PORT=8765
+Environment=SYNC_TOKEN=CHANGE_ME_TOKEN
+ExecStart=/opt/fsync-venv/bin/python /opt/fsync-app/syncd_server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

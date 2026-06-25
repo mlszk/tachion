@@ -1,3 +1,23 @@
+# tachion Windows v0.1.5
+
+## Added
+
+- Added bulk folder import mode for production folders with hundreds of small nested files.
+- When a folder is copied or moved into the sync folder, tachion now treats it as one import job.
+- Child watcher noise is suppressed while the folder is still being copied.
+- tachion waits until the folder tree becomes stable, then queues the final complete file list.
+- Added bulk import progress logs, including visible file counts while scanning and queueing.
+- Added post-import verification using the VPS REST file list when available.
+- If verification finds missing or older files on the server, tachion re-queues them automatically.
+
+## Server impact
+
+- No mandatory VPS protocol change from v0.1.4 final server synthesis.
+- v0.1.5 uses the existing REST endpoint `GET /files` for verification.
+- Keep the v0.1.4 final server synthesis or newer on the VPS, because older servers without REST `/files` cannot provide verification.
+
+---
+
 # tachion Windows releases
 
 ## v0.1.3
@@ -35,3 +55,23 @@ Changes:
 
 - Retries files that are still locked by CAD/editors.
 - Ignores common lock/temp files such as `.dwl`, `.dwl2`, `.swp`, `~$...`, and `.tmp.*`.
+
+## Server REST API hotfix
+
+- Restored REST endpoints required by iOS/manual clients:
+  - `GET /files`
+  - `GET /files/{path}`
+  - `PUT /files/{path}`
+  - `DELETE /files/{path}`
+- Kept WebSocket `/ws` route, delete-everywhere support, and tombstones.
+- REST uploads/deletes now also broadcast updates to connected desktop WebSocket clients.
+
+## Final server synthesis hotfix
+
+- Combined strict WebSocket delete/tombstone handling with iOS REST endpoints.
+- `GET /files` now returns the iOS-friendly `{ "files": [...] }` shape by default.
+- `GET /files?format=manifest` remains available for manifest-style clients.
+- REST auth accepts Bearer, `X-Sync-Token`, `X-Tachion-Token`, and `?token=`.
+- REST PUT/DELETE broadcasts updates to connected desktop clients.
+- Delete is idempotent and keeps tombstones to prevent resurrection.
+

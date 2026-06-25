@@ -2,7 +2,7 @@
 
 Small personal file-sync client for Windows.
 
-Version: **0.1.4**
+Version: **0.1.5**
 
 This is a lightweight C# WinForms tray app. It syncs a chosen local folder with a compatible WebSocket sync server.
 
@@ -87,7 +87,7 @@ Initial GitHub-ready Windows WinForms tray client.
 
 ## Current version
 
-Windows client version: `0.1.4`
+Windows client version: `0.1.5`
 
 This version includes delete propagation, improved handling of whole-folder copy/move operations, a 30-minute offline connection watchdog, and a configurable global start/stop hotkey.
 
@@ -120,3 +120,8 @@ Enable `Always on top` to keep the tachion main window above other windows while
 ## Delete propagation note
 
 Delete propagation requires the updated VPS `syncd_server.py`. The server now understands `delete` messages and keeps tombstones so offline clients do not resurrect deleted folders/files during reconciliation.
+
+
+## v0.1.5 note
+
+Bulk folder import reliability was added for production kits with hundreds of small nested files. tachion now treats a copied folder as one bulk import job, waits until the tree becomes stable, queues the final file list, and verifies the result against the server REST file list when available.

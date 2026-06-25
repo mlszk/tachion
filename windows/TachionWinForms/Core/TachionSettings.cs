@@ -10,6 +10,9 @@ public sealed class TachionSettings
     public string SyncUrl { get; set; } = "wss://tachion.example.com/ws";
     public string SyncName { get; set; } = Environment.MachineName;
     public bool StartSyncOnLaunch { get; set; } = false;
+    public bool ToggleHotkeyEnabled { get; set; } = true;
+    public string ToggleHotkey { get; set; } = "Ctrl+Alt+T";
+    public bool AlwaysOnTop { get; set; } = false;
 
     [JsonIgnore]
     public string SyncToken { get; set; } = "";

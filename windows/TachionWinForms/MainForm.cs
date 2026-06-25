@@ -18,6 +18,11 @@ public sealed class MainForm : Form
     private readonly Button _stopButton = new();
     private readonly CheckBox _startupBox = new();
     private readonly CheckBox _autoSyncBox = new();
+    private readonly CheckBox _hotkeyBox = new();
+    private readonly TextBox _hotkeyTextBox = new();
+    private readonly CheckBox _alwaysOnTopBox = new();
+
+    private const int ToggleSyncHotkeyId = 1;
 
     private TachionSettings _settings;
     private SyncClient? _client;
@@ -47,6 +52,7 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowFromTray();
 
         Log("Ready. Config: " + TachionSettings.ConfigPath);
+        RegisterConfiguredHotkey();
     }
 
     private static string AppVersion()
@@ -69,8 +75,9 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12),
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 6
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -129,22 +136,59 @@ public sealed class MainForm : Form
         var openFolderButton = MakeButton("Open folder", OpenFolder_Click, 96);
         buttons.Controls.Add(openFolderButton);
 
+        var optionsPanel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            WrapContents = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = new Padding(0, 0, 0, 8),
+            Padding = new Padding(0)
+        };
+        root.Controls.Add(optionsPanel);
+
         _startupBox.Text = "Run at Windows startup";
         _startupBox.AutoSize = false;
         _startupBox.Height = 28;
         _startupBox.Width = 180;
         _startupBox.TextAlign = ContentAlignment.MiddleLeft;
         _startupBox.CheckedChanged += StartupBox_Changed;
-        _startupBox.Margin = new Padding(8, 0, 0, 0);
-        buttons.Controls.Add(_startupBox);
+        _startupBox.Margin = new Padding(0, 0, 12, 0);
+        optionsPanel.Controls.Add(_startupBox);
 
         _autoSyncBox.Text = "Start sync when opened";
         _autoSyncBox.AutoSize = false;
         _autoSyncBox.Height = 28;
-        _autoSyncBox.Width = 230;
+        _autoSyncBox.Width = 210;
         _autoSyncBox.TextAlign = ContentAlignment.MiddleLeft;
-        _autoSyncBox.Margin = new Padding(8, 0, 0, 0);
-        buttons.Controls.Add(_autoSyncBox);
+        _autoSyncBox.CheckedChanged += HotkeyOrAutoSyncSettings_Changed;
+        _autoSyncBox.Margin = new Padding(0, 0, 12, 0);
+        optionsPanel.Controls.Add(_autoSyncBox);
+
+        _hotkeyBox.Text = "Global toggle hotkey";
+        _hotkeyBox.AutoSize = false;
+        _hotkeyBox.Height = 28;
+        _hotkeyBox.Width = 170;
+        _hotkeyBox.TextAlign = ContentAlignment.MiddleLeft;
+        _hotkeyBox.CheckedChanged += HotkeyOrAutoSyncSettings_Changed;
+        _hotkeyBox.Margin = new Padding(0, 0, 4, 0);
+        optionsPanel.Controls.Add(_hotkeyBox);
+
+        _hotkeyTextBox.Width = 120;
+        _hotkeyTextBox.Height = 28;
+        _hotkeyTextBox.ReadOnly = true;
+        _hotkeyTextBox.Margin = new Padding(0, 2, 0, 0);
+        _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
+        optionsPanel.Controls.Add(_hotkeyTextBox);
+
+        _alwaysOnTopBox.Text = "Always on top";
+        _alwaysOnTopBox.AutoSize = false;
+        _alwaysOnTopBox.Height = 28;
+        _alwaysOnTopBox.Width = 130;
+        _alwaysOnTopBox.TextAlign = ContentAlignment.MiddleLeft;
+        _alwaysOnTopBox.CheckedChanged += HotkeyOrAutoSyncSettings_Changed;
+        _alwaysOnTopBox.Margin = new Padding(12, 0, 0, 0);
+        optionsPanel.Controls.Add(_alwaysOnTopBox);
 
         var statusPanel = new FlowLayoutPanel
         {
@@ -220,9 +264,14 @@ public sealed class MainForm : Form
         _folderBox.Text = _settings.SyncDir;
         _urlBox.Text = _settings.SyncUrl;
         _nameBox.Text = _settings.SyncName;
+        _loadingStartup = true;
         _tokenBox.Text = _settings.SyncToken;
         _autoSyncBox.Checked = _settings.StartSyncOnLaunch;
-        _loadingStartup = true;
+        _hotkeyBox.Checked = _settings.ToggleHotkeyEnabled;
+        _hotkeyTextBox.Text = _settings.ToggleHotkey;
+        _hotkeyTextBox.Enabled = _hotkeyBox.Checked;
+        _alwaysOnTopBox.Checked = _settings.AlwaysOnTop;
+        TopMost = _settings.AlwaysOnTop;
         _startupBox.Checked = StartupService.IsEnabled();
         _loadingStartup = false;
     }
@@ -234,6 +283,9 @@ public sealed class MainForm : Form
         _settings.SyncName = _nameBox.Text.Trim();
         _settings.SyncToken = _tokenBox.Text;
         _settings.StartSyncOnLaunch = _autoSyncBox.Checked;
+        _settings.ToggleHotkeyEnabled = _hotkeyBox.Checked;
+        _settings.ToggleHotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox.Text) ? "Ctrl+Alt+T" : _hotkeyTextBox.Text.Trim();
+        _settings.AlwaysOnTop = _alwaysOnTopBox.Checked;
         _settings.Save();
     }
 
@@ -352,6 +404,78 @@ public sealed class MainForm : Form
         }
     }
 
+    private void HotkeyOrAutoSyncSettings_Changed(object? sender, EventArgs e)
+    {
+        if (_loadingStartup) return;
+        try
+        {
+            _hotkeyTextBox.Enabled = _hotkeyBox.Checked;
+            TopMost = _alwaysOnTopBox.Checked;
+            SaveUiToSettings();
+            RegisterConfiguredHotkey();
+        }
+        catch (Exception ex)
+        {
+            Log("Option change failed: " + ex.Message);
+        }
+    }
+
+    private void HotkeyTextBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        e.SuppressKeyPress = true;
+        if (!HotkeyService.TryFromKeyData(e.KeyData, out var hotkey))
+        {
+            Log("Hotkey must include Ctrl, Alt, or Shift plus a normal key.");
+            return;
+        }
+
+        _hotkeyTextBox.Text = hotkey.Text;
+        var previousLoading = _loadingStartup;
+        _loadingStartup = true;
+        _hotkeyBox.Checked = true;
+        _loadingStartup = previousLoading;
+        SaveUiToSettings();
+        RegisterConfiguredHotkey();
+    }
+
+    private void RegisterConfiguredHotkey()
+    {
+        if (!IsHandleCreated) return;
+        HotkeyService.Unregister(Handle, ToggleSyncHotkeyId);
+        _hotkeyTextBox.Enabled = _hotkeyBox.Checked;
+
+        if (!_settings.ToggleHotkeyEnabled) return;
+
+        if (!HotkeyService.TryParse(_settings.ToggleHotkey, out var hotkey))
+        {
+            Log("Global hotkey is invalid: " + _settings.ToggleHotkey);
+            return;
+        }
+
+        if (HotkeyService.Register(Handle, ToggleSyncHotkeyId, hotkey, out var error))
+        {
+            Log("Global toggle hotkey registered: " + hotkey.Text);
+        }
+        else
+        {
+            Log("Global hotkey registration failed: " + error);
+        }
+    }
+
+    private void ToggleSyncFromHotkey()
+    {
+        if (_client?.IsRunning == true)
+        {
+            Log("Hotkey pressed: stopping sync.");
+            Stop_Click(this, EventArgs.Empty);
+        }
+        else
+        {
+            Log("Hotkey pressed: starting sync.");
+            Start_Click(this, EventArgs.Empty);
+        }
+    }
+
     private void ShowFromTray()
     {
         Show();
@@ -362,6 +486,7 @@ public sealed class MainForm : Form
     private void Quit()
     {
         _allowClose = true;
+        HotkeyService.Unregister(Handle, ToggleSyncHotkeyId);
         _client?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
@@ -371,6 +496,7 @@ public sealed class MainForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        RegisterConfiguredHotkey();
 
         if (_autoStartAttempted || !_settings.StartSyncOnLaunch)
             return;
@@ -378,6 +504,23 @@ public sealed class MainForm : Form
         _autoStartAttempted = true;
         Log("Auto-start sync enabled.");
         Start_Click(this, EventArgs.Empty);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == HotkeyService.WmHotkey && m.WParam.ToInt32() == ToggleSyncHotkeyId)
+        {
+            ToggleSyncFromHotkey();
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        HotkeyService.Unregister(Handle, ToggleSyncHotkeyId);
+        base.OnHandleDestroyed(e);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -417,6 +560,8 @@ public sealed class MainForm : Form
         else if (text.StartsWith("Stopped", StringComparison.OrdinalIgnoreCase))
         {
             _statusLabel.Text = "Stopped";
+            _startButton.Enabled = true;
+            _stopButton.Enabled = false;
             SetTrayWorking(false);
         }
     }

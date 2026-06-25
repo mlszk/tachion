@@ -2,5 +2,9 @@
   "SyncDir": "D:\\tachion",
   "SyncUrl": "wss://tachion.example.com/ws",
   "SyncName": "MY-PC",
+  "StartSyncOnLaunch": false,
+  "ToggleHotkeyEnabled": true,
+  "ToggleHotkey": "Ctrl+Alt+T",
+  "AlwaysOnTop": false,
   "ProtectedSyncToken": ""
 }

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net.WebSockets;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
@@ -18,6 +19,9 @@ public sealed class SyncClient : IDisposable
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _pendingUploads = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _pendingDeletes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTime> _recentRemoteDeletes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _activeFolderImports = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan UnableToConnectStopAfter = TimeSpan.FromMinutes(30);
+    private DateTime? _unableToConnectSinceUtc;
 
     public bool IsRunning => _cts is { IsCancellationRequested: false };
 
@@ -43,6 +47,7 @@ public sealed class SyncClient : IDisposable
         CancelPendingDeletes();
         try { _watcher?.Dispose(); } catch { }
         try { _ws?.Abort(); _ws?.Dispose(); } catch { }
+        _unableToConnectSinceUtc = null;
         _watcher = null;
         _ws = null;
         _log("Stopped.");
@@ -111,53 +116,132 @@ public sealed class SyncClient : IDisposable
         return false;
     }
 
+    private static bool IsSameOrChildRel(string rel, string parentRel)
+    {
+        rel = rel.Replace("\\", "/").Trim('/');
+        parentRel = parentRel.Replace("\\", "/").Trim('/');
+        return rel.Equals(parentRel, StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith(parentRel + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeFullPath(string path)
+    {
+        return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool IsSameOrChildFullPath(string fullPath, string parentFullPath)
+    {
+        fullPath = NormalizeFullPath(fullPath);
+        parentFullPath = NormalizeFullPath(parentFullPath);
+        return fullPath.Equals(parentFullPath, StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(parentFullPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(parentFullPath + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsUnderActiveFolderImport(string fullPath)
+    {
+        if (_activeFolderImports.IsEmpty) return false;
+
+        var now = DateTime.UtcNow;
+        foreach (var item in _activeFolderImports.ToArray())
+        {
+            if (now >= item.Value)
+            {
+                _activeFolderImports.TryRemove(item.Key, out _);
+                continue;
+            }
+
+            try
+            {
+                if (IsSameOrChildFullPath(fullPath, item.Key))
+                    return true;
+            }
+            catch
+            {
+                // Ignore malformed/racing paths.
+            }
+        }
+
+        return false;
+    }
+
+    private bool HasPendingUploadsForRelTree(string relRoot)
+    {
+        return _pendingUploads.Keys.Any(rel => IsSameOrChildRel(rel, relRoot));
+    }
+
+    private bool HasRecentRemoteDelete(string rel)
+    {
+        foreach (var item in _recentRemoteDeletes)
+        {
+            if (DateTime.UtcNow < item.Value && IsSameOrChildRel(rel, item.Key))
+                return true;
+        }
+        return false;
+    }
+
+    private void CancelPendingUploadsForRelTree(string rel)
+    {
+        foreach (var item in _pendingUploads.Keys.ToList())
+        {
+            if (!IsSameOrChildRel(item, rel)) continue;
+            if (_pendingUploads.TryRemove(item, out var pendingUpload))
+            {
+                try { pendingUpload.Cancel(); } catch { }
+                try { pendingUpload.Dispose(); } catch { }
+            }
+        }
+    }
+
     private void QueueFolderUpload(string folderPath)
     {
         if (_cts == null || _cts.IsCancellationRequested) return;
 
+        string folderRoot;
+        try
+        {
+            folderRoot = NormalizeFullPath(folderPath);
+        }
+        catch
+        {
+            return;
+        }
+
+        _activeFolderImports[folderRoot] = DateTime.UtcNow.AddMinutes(5);
         var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+
         _ = Task.Run(async () =>
         {
-            var queuedSignatures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             string? previousTreeSignature = null;
             var stableRounds = 0;
+            var folderName = Path.GetFileName(folderRoot);
 
             try
             {
-                // A copied folder tree is not atomic on Windows. The first directory
-                // event can arrive while nested folders/files are still being created,
-                // and FileSystemWatcher may miss some children during that race.
-                // Keep rescanning until the tree stops changing for a few rounds.
-                for (var round = 1; round <= 120; round++) // about 60 seconds max
+                _log($"Bulk folder import detected {folderName}; waiting until folder tree is stable...");
+
+                // A copied folder tree is not atomic on Windows. Treat the root folder
+                // as one import job: suppress noisy child watcher events, wait until
+                // the tree stops changing, then queue the complete file list.
+                for (var round = 1; round <= 240; round++) // about 120 seconds max
                 {
                     linked.Token.ThrowIfCancellationRequested();
-                    if (!Directory.Exists(folderPath)) return;
+                    if (!Directory.Exists(folderRoot)) return;
 
-                    var files = Directory.EnumerateFiles(folderPath, "*", SearchOption.AllDirectories)
+                    var files = Directory.EnumerateFiles(folderRoot, "*", SearchOption.AllDirectories)
                         .Where(file => !ShouldIgnoreFile(file))
                         .OrderBy(file => file, StringComparer.OrdinalIgnoreCase)
                         .ToList();
 
-                    var snapshot = BuildFolderSnapshot(files);
-                    foreach (var item in snapshot)
-                    {
-                        linked.Token.ThrowIfCancellationRequested();
-                        if (!queuedSignatures.TryGetValue(item.Key, out var previousFileSignature) || previousFileSignature != item.Value)
-                        {
-                            queuedSignatures[item.Key] = item.Value;
-                            QueueUpload(item.Key);
-                        }
-                    }
-
+                    snapshot = BuildFolderSnapshot(files);
                     var treeSignature = BuildFolderSignature(snapshot);
+
                     if (treeSignature == previousTreeSignature)
                     {
                         stableRounds++;
                         if (stableRounds >= 4)
-                        {
-                            _log($"Folder scan complete {Path.GetFileName(folderPath)}: {queuedSignatures.Count} file(s) queued.");
-                            return;
-                        }
+                            break;
                     }
                     else
                     {
@@ -165,20 +249,50 @@ public sealed class SyncClient : IDisposable
                         previousTreeSignature = treeSignature;
                     }
 
+                    if (round % 20 == 0)
+                        _log($"Bulk import still watching {folderName}: {snapshot.Count} file(s) visible so far...");
+
                     await Task.Delay(500, linked.Token);
                 }
 
-                _log($"Folder scan reached time limit {Path.GetFileName(folderPath)}: {queuedSignatures.Count} file(s) queued.");
+                if (!Directory.Exists(folderRoot)) return;
+
+                var finalFiles = snapshot.Keys
+                    .Where(File.Exists)
+                    .OrderBy(file => file, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (finalFiles.Count == 0)
+                {
+                    _log($"Bulk import complete {folderName}: no files found.");
+                    return;
+                }
+
+                _log($"Bulk import ready {folderName}: {finalFiles.Count} file(s) found; queueing uploads...");
+
+                var queued = 0;
+                foreach (var file in finalFiles)
+                {
+                    linked.Token.ThrowIfCancellationRequested();
+                    QueueUpload(file, fromBulkImport: true);
+                    queued++;
+                    if (queued % 50 == 0)
+                        _log($"Bulk import queued {folderName}: {queued}/{finalFiles.Count} file(s)...");
+                }
+
+                _log($"Bulk import queued {folderName}: {queued}/{finalFiles.Count} file(s). Waiting for upload queue to settle...");
+                await VerifyBulkImportAsync(folderRoot, finalFiles, linked.Token);
             }
             catch (OperationCanceledException)
             {
             }
             catch (Exception ex)
             {
-                _log("Folder scan skipped " + folderPath + ": " + ex.Message);
+                _log("Bulk folder import skipped " + folderPath + ": " + ex.Message);
             }
             finally
             {
+                _activeFolderImports.TryRemove(folderRoot, out _);
                 try { linked.Dispose(); } catch { }
             }
         });
@@ -210,6 +324,158 @@ public sealed class SyncClient : IDisposable
         return string.Join("\n", snapshot
             .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
             .Select(item => item.Key + "|" + item.Value));
+    }
+
+    private sealed class ServerFileInfo
+    {
+        public long Size { get; init; }
+        public long MtimeNs { get; init; }
+    }
+
+    private async Task VerifyBulkImportAsync(string folderRoot, List<string> originalFiles, CancellationToken token)
+    {
+        string folderName;
+        string folderRel;
+        try
+        {
+            folderName = Path.GetFileName(folderRoot);
+            folderRel = PathUtil.RelativeUnixPath(_settings.SyncDir, folderRoot);
+        }
+        catch
+        {
+            return;
+        }
+
+        // Let the normal per-file upload queue finish first. This keeps the bulk
+        // feature compatible with the existing send/retry logic.
+        for (var i = 1; i <= 180; i++) // up to about 3 minutes
+        {
+            token.ThrowIfCancellationRequested();
+            if (!HasPendingUploadsForRelTree(folderRel)) break;
+            if (i % 15 == 0)
+                _log($"Bulk import waiting {folderName}: upload queue still active...");
+            await Task.Delay(1000, token);
+        }
+
+        Dictionary<string, ServerFileInfo>? serverFiles;
+        try
+        {
+            serverFiles = await FetchServerFileListAsync(token);
+        }
+        catch (Exception ex)
+        {
+            _log($"Bulk import verify skipped {folderName}: {ex.Message}");
+            return;
+        }
+
+        if (serverFiles is null)
+        {
+            _log($"Bulk import verify skipped {folderName}: server file list unavailable.");
+            return;
+        }
+
+        var missingOrOld = new List<string>();
+        foreach (var file in originalFiles)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!File.Exists(file)) continue;
+            if (ShouldIgnoreFile(file)) continue;
+
+            string rel;
+            FileInfo info;
+            long localMtimeNs;
+            try
+            {
+                rel = PathUtil.RelativeUnixPath(_settings.SyncDir, file);
+                info = new FileInfo(file);
+                localMtimeNs = TimeUtil.FileMtimeNs(file);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!serverFiles.TryGetValue(rel, out var remote)
+                || remote.Size != info.Length
+                || remote.MtimeNs < localMtimeNs)
+            {
+                missingOrOld.Add(file);
+            }
+        }
+
+        if (missingOrOld.Count == 0)
+        {
+            _log($"Bulk import verified {folderName}: {originalFiles.Count} file(s) present on server.");
+            return;
+        }
+
+        _log($"Bulk import verify found {missingOrOld.Count} missing/old file(s) in {folderName}; re-queueing...");
+        foreach (var file in missingOrOld)
+        {
+            token.ThrowIfCancellationRequested();
+            QueueUpload(file, fromBulkImport: true);
+        }
+    }
+
+    private async Task<Dictionary<string, ServerFileInfo>?> FetchServerFileListAsync(CancellationToken token)
+    {
+        var uri = BuildRestFilesUri();
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.SyncToken);
+
+        using var response = await http.SendAsync(request, token);
+        if (!response.IsSuccessStatusCode)
+            throw new IOException($"server returned HTTP {(int)response.StatusCode}");
+
+        await using var stream = await response.Content.ReadAsStreamAsync(token);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: token);
+
+        var result = new Dictionary<string, ServerFileInfo>(StringComparer.OrdinalIgnoreCase);
+        var root = doc.RootElement;
+
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("files", out var filesElement))
+        {
+            foreach (var item in filesElement.EnumerateArray())
+            {
+                var path = item.TryGetProperty("path", out var p) ? p.GetString() : null;
+                if (string.IsNullOrWhiteSpace(path)) continue;
+                var size = item.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : 0;
+                var mtime = item.TryGetProperty("mtime_ns", out var m) && m.TryGetInt64(out var mv) ? mv : 0;
+                result[path.Replace("\\", "/").Trim('/')] = new ServerFileInfo { Size = size, MtimeNs = mtime };
+            }
+            return result;
+        }
+
+        // Backward-compatible support for older manifest shape: { "path": mtime_ns }.
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var item in root.EnumerateObject())
+            {
+                if (item.Value.TryGetInt64(out var mtime))
+                    result[item.Name.Replace("\\", "/").Trim('/')] = new ServerFileInfo { Size = -1, MtimeNs = mtime };
+            }
+            return result;
+        }
+
+        return null;
+    }
+
+    private Uri BuildRestFilesUri()
+    {
+        var wsUri = new Uri(_settings.SyncUrl);
+        var builder = new UriBuilder(wsUri)
+        {
+            Scheme = wsUri.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ? "https" : "http",
+            Query = ""
+        };
+
+        var path = wsUri.AbsolutePath;
+        if (path.EndsWith("/ws", StringComparison.OrdinalIgnoreCase))
+            path = path[..^3];
+        path = path.TrimEnd('/') + "/files";
+        builder.Path = path;
+        return builder.Uri;
     }
 
     private void QueueFullRescan()
@@ -244,16 +510,17 @@ public sealed class SyncClient : IDisposable
         });
     }
 
-    private void QueueUpload(string fullPath)
+    private void QueueUpload(string fullPath, bool fromBulkImport = false)
     {
         if (_cts == null || _cts.IsCancellationRequested) return;
+        if (!fromBulkImport && IsUnderActiveFolderImport(fullPath)) return;
         if (Directory.Exists(fullPath)) return;
         if (ShouldIgnoreFile(fullPath)) return;
 
         var rel = PathUtil.RelativeUnixPath(_settings.SyncDir, fullPath);
         if (_recentRemoteWrites.TryGetValue(rel, out var until) && DateTime.UtcNow < until)
             return;
-        if (_recentRemoteDeletes.TryGetValue(rel, out var deleteUntil) && DateTime.UtcNow < deleteUntil)
+        if (HasRecentRemoteDelete(rel))
             return;
 
         var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
@@ -273,14 +540,11 @@ public sealed class SyncClient : IDisposable
         if (ShouldIgnoreFile(fullPath)) return;
 
         var rel = PathUtil.RelativeUnixPath(_settings.SyncDir, fullPath);
-        if (_recentRemoteDeletes.TryGetValue(rel, out var until) && DateTime.UtcNow < until)
+        if (HasRecentRemoteDelete(rel))
             return;
 
-        if (_pendingUploads.TryRemove(rel, out var pendingUpload))
-        {
-            try { pendingUpload.Cancel(); } catch { }
-            try { pendingUpload.Dispose(); } catch { }
-        }
+        // If a whole folder is deleted, cancel queued uploads for all children too.
+        CancelPendingUploadsForRelTree(rel);
 
         var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
         if (_pendingDeletes.TryRemove(rel, out var old))
@@ -302,8 +566,8 @@ public sealed class SyncClient : IDisposable
             // If the file immediately appears again, treat it as an update, not deletion.
             await Task.Delay(500, token);
 
-            if (File.Exists(fullPath)) return;
-            if (_recentRemoteDeletes.TryGetValue(rel, out var until) && DateTime.UtcNow < until) return;
+            if (File.Exists(fullPath) || Directory.Exists(fullPath)) return;
+            if (HasRecentRemoteDelete(rel)) return;
 
             var deleteNs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000_000L;
             for (var attempt = 1; attempt <= 20; attempt++)
@@ -352,6 +616,7 @@ public sealed class SyncClient : IDisposable
 
                 if (!File.Exists(fullPath)) return;
                 if (_recentRemoteWrites.TryGetValue(rel, out var until) && DateTime.UtcNow < until) return;
+                if (HasRecentRemoteDelete(rel)) return;
 
                 try
                 {
@@ -406,6 +671,9 @@ public sealed class SyncClient : IDisposable
                 _ws = ws;
                 _log("Connecting...");
                 await ws.ConnectAsync(new Uri(_settings.SyncUrl), token);
+                if (_unableToConnectSinceUtc.HasValue)
+                    _log("Connection restored; offline stop timer reset.");
+                _unableToConnectSinceUtc = null;
                 _log("Connected.");
 
                 await SendHelloAsync(token);
@@ -415,6 +683,14 @@ public sealed class SyncClient : IDisposable
             catch (Exception ex)
             {
                 _log("Connection error: " + ex.Message);
+
+                if (ShouldStopAfterUnableToConnectTimeout(ex))
+                {
+                    _log("Unable to connect to the remote server for 30 minutes. Sync stopped to allow Windows sleep/hibernate.");
+                    Stop();
+                    break;
+                }
+
                 try { await Task.Delay(3000, token); } catch { break; }
             }
             finally
@@ -458,6 +734,35 @@ public sealed class SyncClient : IDisposable
             ["manifest"] = BuildManifest()
         };
         await SendJsonAsync(hello, token);
+    }
+
+    private bool ShouldStopAfterUnableToConnectTimeout(Exception ex)
+    {
+        if (!ExceptionMessageContains(ex, "Unable to connect to the remote server"))
+        {
+            _unableToConnectSinceUtc = null;
+            return false;
+        }
+
+        var now = DateTime.UtcNow;
+        if (!_unableToConnectSinceUtc.HasValue)
+        {
+            _unableToConnectSinceUtc = now;
+            _log("Unable-to-connect timer started; sync will stop after 30 minutes if the server stays unreachable.");
+            return false;
+        }
+
+        return now - _unableToConnectSinceUtc.Value >= UnableToConnectStopAfter;
+    }
+
+    private static bool ExceptionMessageContains(Exception ex, string text)
+    {
+        for (var current = ex; current != null; current = current.InnerException)
+        {
+            if (current.Message.Contains(text, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private async Task ReceiveLoopAsync(CancellationToken token)
@@ -524,16 +829,16 @@ public sealed class SyncClient : IDisposable
 
         var full = PathUtil.SafeFullPath(_settings.SyncDir, rel);
         _recentRemoteDeletes[rel] = DateTime.UtcNow.AddSeconds(5);
-
-        if (_pendingUploads.TryRemove(rel, out var pendingUpload))
-        {
-            try { pendingUpload.Cancel(); } catch { }
-            try { pendingUpload.Dispose(); } catch { }
-        }
+        CancelPendingUploadsForRelTree(rel);
 
         try
         {
-            if (File.Exists(full))
+            if (Directory.Exists(full))
+            {
+                Directory.Delete(full, recursive: true);
+                _log("Deleted remote folder " + rel);
+            }
+            else if (File.Exists(full))
             {
                 File.Delete(full);
                 _log("Deleted remote " + rel);
